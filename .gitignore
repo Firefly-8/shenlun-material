@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 本机临时文件
+*.log
+.probe_write.txt
+_probe.py
+
+# 密钥（红线：绝不进 git）
+.env
+*.env
+credentials/
+secrets/
+
+# 抓取中间产物（体积大，按需保留）
+data/raw-*.json
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
