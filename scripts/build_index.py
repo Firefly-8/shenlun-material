@@ -100,6 +100,13 @@ def main():
         if not data:
             continue
         articles = data if isinstance(data, list) else data.get("articles", [])
+        # 归档日以文件名日期为准。
+        # date 字段是文章发布日（省府文件可能是历史日期，且早期数据是 20261104 这类紧凑格式），
+        # 只有当 date 本身就是 ISO 格式时才用；否则用归档日，避免日期筛选被历史日期撑开。
+        for a in articles:
+            d = a.get("date", "")
+            iso = len(d) == 10 and d[4] == "-" and d[7] == "-"
+            a["fetch_date"] = day if not iso else d
         index["days"].append({
             "date": day,
             "count": len(articles),

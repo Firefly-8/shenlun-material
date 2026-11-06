@@ -164,6 +164,7 @@ def fetch_hunan_daily(date_str):
                 "source_code": "hnrb",
                 "column": page_name or page_hint,
                 "date": date_str,
+                "fetch_date": date_str,
                 "url": (f"http://epaper.voc.com.cn/hnrb/html/{ym(date_str)}/"
                         f"{date_str[8:10]}/content_{cid}.htm"),
                 "title": body["title"] or title,
@@ -201,7 +202,9 @@ def _gov_collect(url, limit=25):
         if key in seen:
             continue
         seen.add(key)
-        out.append({"date": d, "title": title, "url": href})
+        # date 统一成 YYYY-MM-DD；compact 保留紧凑格式供 14 天窗口比较
+        iso = f"{d[0:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 else d
+        out.append({"date": iso, "compact": d, "title": title, "url": href})
         if len(out) >= limit:
             break
     return out
@@ -248,7 +251,12 @@ def fetch_hunan_gov(date_str):
         picked.append(e)
     # 只取最近 14 天内的，且优先取"规划/通知/意见/办法"这类有申论价值的
     latest = date_str.replace("-", "")
+    oldest = (datetime.strptime(latest, "%Y%m%d")
+              - timedelta(days=14)).strftime("%Y%m%d")
     for e in picked[:12]:
+        # 超出 14 天窗口的直接跳过
+        if e.get("compact") and not (oldest <= e["compact"] <= latest):
+            continue
         try:
             body = _gov_content(e["url"])
         except Exception:
@@ -256,11 +264,12 @@ def fetch_hunan_gov(date_str):
         if len(body["paragraphs"]) < 5:
             continue
         articles.append({
-            "id": f"hngov-{date_str}-{e['date']}-{abs(hash(e['title'])) % 100000}",
+            "id": f"hngov-{date_str}-{e['compact']}-{abs(hash(e['title'])) % 100000}",
             "source": "湖南省人民政府",
             "source_code": "hngov",
             "column": "政策文件",
             "date": e["date"],
+            "fetch_date": date_str,
             "url": e["url"],
             "title": body["title"] or e["title"],
             "author": "湖南省人民政府",
@@ -531,6 +540,7 @@ def fetch_rednet(date_str):
             "column": _rednet_column(e["url"], e.get("label", ""),
                                      body["raw_title"]),
             "date": date_str,
+            "fetch_date": date_str,
             "url": e["url"],
             "title": title,
             "author": "红网",

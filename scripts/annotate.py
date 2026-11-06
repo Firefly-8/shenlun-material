@@ -23,6 +23,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -41,6 +42,8 @@ MAX_WORKERS = 3          # 并发上限，避免触发限流
 CHUNK_CHARS = 6000      # 单次请求的正文长度上限
 CHUNK_PARAS = 12        # 单次请求的段落数上限
 TIMEOUT = 180
+RETRY_ROUNDS = 2        # 失败后额外重试轮数（JSON 解析失败多是偶发输出瑕疵）
+RETRY_BACKOFF = 20      # 每轮重试前等待秒数（避开限流窗口）
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT_DIR, "data")
@@ -131,8 +134,48 @@ def call_llm(prompt, max_tokens=MAX_TOKENS):
     return text
 
 
+def _repair_json_text(t):
+    """修复 LLM 常见的 JSON 瑕疵：尾逗号、中文引号、单引号、裸控制字符。"""
+    # 1) 中文引号 → 英文引号（仅在字符串值内部出现时替换风险最高，先全局做一次）
+    t = t.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+    # 2) 去掉对象/数组里的尾逗号： {"a":1,}  [1,2,]
+    t = re.sub(r",\s*([}\]])", r"\1", t)
+    # 3) 去掉字符串外的裸换行/制表符
+    t = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", t)
+    return t
+
+
+def _scan_balanced(t, start):
+    """从 t[start]（应为 {）开始做括号配对扫描，跳过字符串字面量。
+
+    返回对应右花括号的位置，找不到返回 -1。
+    """
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(t)):
+        ch = t[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
 def extract_json(text):
-    """从模型输出里抠出 JSON：剥 ```json 包裹，取第一个 { 到最后一个 }。"""
+    """从模型输出里抠出 JSON：剥 ```json 包裹，括号配对截取，容错修复。"""
     if not text:
         raise ApiError("模型返回为空")
     t = text.strip()
@@ -140,13 +183,25 @@ def extract_json(text):
         t = re.sub(r"```[a-zA-Z]*", "", t)
         t = t.replace("```", "")
     t = t.strip()
-    start, end = t.find("{"), t.rfind("}")
-    if start == -1 or end == -1 or end <= start:
+
+    # 逐个候选起点尝试，找到第一个能成功解析的 JSON 对象
+    candidates = [m.start() for m in re.finditer(r"\{", t)]
+    last_err = None
+    for start in candidates:
+        end = _scan_balanced(t, start)
+        if end == -1:
+            continue
+        snippet = t[start:end + 1]
+        for candidate in (snippet, _repair_json_text(snippet)):
+            try:
+                return json.loads(candidate)
+            except ValueError as exc:
+                last_err = exc
+                continue
+
+    if not candidates:
         raise ApiError(f"输出里找不到 JSON: {text[:200]}")
-    try:
-        return json.loads(t[start:end + 1])
-    except ValueError as exc:
-        raise ApiError(f"JSON 解析失败: {exc}") from exc
+    raise ApiError(f"JSON 解析失败: {last_err}")
 
 
 # ---------------------------------------------------------------- Prompt
@@ -378,6 +433,7 @@ def build_record(article, result):
         "source": article.get("source", ""),
         "column": article.get("column", ""),
         "date": article.get("date", ""),
+        "fetch_date": article.get("fetch_date", article.get("date", "")),
         "url": article.get("url", ""),
         "title": article.get("title", ""),
         "author": article.get("author", ""),
@@ -511,25 +567,44 @@ def main():
         return 1
 
     results, failures = [], []
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = {pool.submit(annotate_article, a): a for a in articles}
-        for fut in as_completed(futures):
-            art = futures[fut]
-            try:
-                result = fut.result()
-            except Exception as exc:
-                failures.append({
-                    "id": art.get("id", ""),
-                    "title": art.get("title", ""),
-                    "url": art.get("url", ""),
-                    "error": f"{type(exc).__name__}: {exc}",
-                })
-                print(f"[失败] {art.get('title', '')[:30]} -> {exc}",
-                      file=sys.stderr)
-                continue
-            record = build_record(art, result)
-            record["_term_details"] = result.get("term_details", [])
-            results.append(record)
+    pending = list(articles)
+    ok_ids = set()
+
+    # 分轮重试：首轮全部跑，失败的在下一轮再试（最多 RETRY_ROUNDS 轮）
+    for attempt in range(RETRY_ROUNDS + 1):
+        if not pending:
+            break
+        if attempt > 0:
+            print(f"\n=== 第 {attempt} 轮重试：{len(pending)} 篇 ===", file=sys.stderr)
+            time.sleep(RETRY_BACKOFF)
+
+        round_failures = []
+        round_results = []
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            futures = {pool.submit(annotate_article, a): a for a in pending}
+            for fut in as_completed(futures):
+                art = futures[fut]
+                try:
+                    result = fut.result()
+                except Exception as exc:
+                    round_failures.append({
+                        "id": art.get("id", ""),
+                        "title": art.get("title", ""),
+                        "url": art.get("url", ""),
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "attempts": attempt + 1,
+                    })
+                    print(f"[失败] {art.get('title', '')[:30]} -> {exc}",
+                          file=sys.stderr)
+                    continue
+                record = build_record(art, result)
+                record["_term_details"] = result.get("term_details", [])
+                round_results.append(record)
+                ok_ids.add(art.get("id", ""))
+
+        results.extend(round_results)
+        failures = round_failures
+        pending = [a for a in pending if a.get("id", "") not in ok_ids]
 
     results.sort(key=lambda r: (r.get("source", ""), r.get("column", ""),
                                 r.get("title", "")))
@@ -537,9 +612,10 @@ def main():
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
 
-    batch_rows = build_term_batch(results, date_str)
+    batch = build_term_batch(results, date_str)
+    batch_rows = batch["terms"]
     with open(batch_path, "w", encoding="utf-8") as f:
-        json.dump({"terms": batch_rows}, f, ensure_ascii=False, indent=2)
+        json.dump(batch, f, ensure_ascii=False, indent=2)
 
     merged = update_global_terms(global_path, batch_rows, date_str)
 
@@ -555,6 +631,12 @@ def main():
         print(f"失败明细 -> {err_path}", file=sys.stderr)
         for item in failures:
             print(f"  - {item['title'][:30]} | {item['error']}", file=sys.stderr)
+
+    # 失败率过高时返回非零，让上游 cron 能感知
+    if articles and len(failures) / len(articles) > 0.5:
+        print(f"!! 失败率过高（{len(failures)}/{len(articles)}），判定为失败",
+              file=sys.stderr)
+        return 6
     return 0
 
 

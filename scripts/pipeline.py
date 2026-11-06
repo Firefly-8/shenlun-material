@@ -52,6 +52,8 @@ def run(cmd):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", default=None, help="YYYY-MM-DD，默认今天")
+    ap.add_argument("--yesterday", action="store_true",
+                    help="抓取前一天（申论素材通常看昨天报纸）")
     ap.add_argument("--skip-fetch", action="store_true", help="跳过抓取")
     ap.add_argument("--skip-annotate", action="store_true", help="跳过标注")
     args = ap.parse_args()
@@ -62,9 +64,14 @@ def main():
     date = args.date
     if not date:
         import datetime
-        date = datetime.datetime.now().strftime("%Y-%m-%d")
+        if args.yesterday:
+            date = (datetime.datetime.now()
+                    - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        else:
+            date = datetime.datetime.now().strftime("%Y-%m-%d")
 
     os.makedirs(DATA, exist_ok=True)
+    fetch_ok = True
 
     if not args.skip_fetch:
         import sources
@@ -74,21 +81,41 @@ def main():
         except Exception as e:
             print(f"!! 抓取失败: {e}", file=sys.stderr)
             arts = []
+            fetch_ok = False
         raw_path = os.path.join(DATA, f"raw-{date}.json")
         with open(raw_path, "w", encoding="utf-8") as f:
             json.dump(arts, f, ensure_ascii=False, indent=1)
         print(f"    抓到 {len(arts)} 篇 → {raw_path}")
+        # 抓取为 0 篇视为失败（源改版 / 网络问题），不进入标注
+        if len(arts) < 5:
+            print(f"!! 抓取篇数过少（{len(arts)} < 5），判定为失败，终止", file=sys.stderr)
+            return 2
 
     if not args.skip_annotate:
         print(f"[2/3] LLM 标注 {date} ...", flush=True)
-        run([sys.executable, os.path.join(SCRIPTS, "annotate.py"),
-             "--date", date])
+        rc = run([sys.executable, os.path.join(SCRIPTS, "annotate.py"),
+                  "--date", date])
+        if rc != 0:
+            print(f"!! 标注步骤失败（退出码 {rc}）", file=sys.stderr)
+            return 3
+        # 校验标注产出
+        out_path = os.path.join(DATA, f"annotated-{date}.json")
+        try:
+            with open(out_path, encoding="utf-8") as f:
+                n = len(json.load(f))
+        except Exception as e:
+            print(f"!! 标注结果读取失败: {e}", file=sys.stderr)
+            return 4
+        if n < 5:
+            print(f"!! 标注成功篇数过少（{n} < 5），判定为失败", file=sys.stderr)
+            return 5
 
     print(f"[3/3] 重建索引 ...", flush=True)
     run([sys.executable, os.path.join(SCRIPTS, "build_index.py")])
 
     print("\n完成。")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

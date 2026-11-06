@@ -55,7 +55,7 @@ async function load() {
 function buildFilters() {
   const sources = [...new Set(S.articles.map(a => a.source))].filter(Boolean).sort();
   const columns = [...new Set(S.articles.map(a => a.column))].filter(Boolean).sort();
-  const dates = [...new Set(S.articles.map(a => a.date))].filter(Boolean).sort().reverse();
+  const dates = [...new Set(S.articles.map(a => a.fetch_date || a.date))].filter(Boolean).sort().reverse();
 
   const opt = (v, label, cur) =>
     `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(label)}</option>`;
@@ -90,7 +90,7 @@ function applyFilters() {
   S.filtered = S.articles.filter(a => {
     if (source && a.source !== source) return false;
     if (column && a.column !== column) return false;
-    if (date && a.date !== date) return false;
+    if (date && (a.fetch_date || a.date) !== date) return false;
     if (hunanTag) {
       const tags = (a.tags && a.tags.hunan) || [];
       if (!tags.includes(hunanTag)) return false;
@@ -129,7 +129,7 @@ function renderArticles() {
   }
   // 按日期倒序
   const list = S.filtered.slice().sort((a, b) =>
-    (b.date || '').localeCompare(a.date || '') || (b.id || '').localeCompare(a.id || ''));
+    (b.fetch_date || b.date || '').localeCompare(a.fetch_date || a.date || '') || (b.id || '').localeCompare(a.id || ''));
 
   box.innerHTML = list.map(a => {
     const paras = (a.paragraphs || []).map(p => {
@@ -160,7 +160,7 @@ function renderArticles() {
       <div class="article-meta">
         <span class="src">${esc(a.source)}</span>
         ${a.column ? `<span>${esc(a.column)}</span>` : ''}
-        <span>${esc(a.date || '')}</span>
+        <span>${esc(a.fetch_date || a.date || '')}</span>
         ${a.author ? `<span>${esc(a.author)}</span>` : ''}
         <a href="${esc(a.url)}" target="_blank" rel="noopener">看原文 ↗</a>
       </div>
@@ -181,7 +181,7 @@ function renderSidebar() {
     return;
   }
   const list = S.filtered.slice().sort((a, b) =>
-    (b.date || '').localeCompare(a.date || '') || (b.id || '').localeCompare(a.id || ''));
+    (b.fetch_date || b.date || '').localeCompare(a.fetch_date || a.date || '') || (b.id || '').localeCompare(a.id || ''));
 
   box.innerHTML = list.map(a => {
     const o = a.outline || {};
@@ -191,7 +191,7 @@ function renderSidebar() {
       `<li><b>${esc(c.title || '')}</b>　${esc(c.summary || '')}</li>`).join('');
     return `<div class="side-article" data-id="${esc(a.id)}">
       <div class="t">${highlight(a.title, S.filters.q)}</div>
-      <div class="meta"><span>${esc(a.source)}</span><span>${esc(a.column || '')}</span><span>${esc(a.date || '')}</span></div>
+      <div class="meta"><span>${esc(a.source)}</span><span>${esc(a.column || '')}</span><span>${esc(a.fetch_date || a.date || '')}</span></div>
       ${o.thesis ? `<div class="side-thesis"><b>总论点：</b>${esc(o.thesis)}</div>` : ''}
       ${pts ? `<ul class="side-points">${pts}</ul>` : ''}
       ${cases ? `<ul class="side-cases">${cases}</ul>` : ''}
@@ -246,7 +246,7 @@ function renderTerms() {
 function renderOutlines() {
   const box = $('#outlines');
   const list = S.filtered.slice().sort((a, b) =>
-    (b.date || '').localeCompare(a.date || '') || (b.id || '').localeCompare(a.id || ''));
+    (b.fetch_date || b.date || '').localeCompare(a.fetch_date || a.date || '') || (b.id || '').localeCompare(a.id || ''));
   if (!list.length) { box.innerHTML = '<div class="empty">无匹配</div>'; return; }
 
   box.innerHTML = list.map(a => {
@@ -260,7 +260,7 @@ function renderOutlines() {
       <div class="article-meta">
         <span class="src">${esc(a.source)}</span>
         <span>${esc(a.column || '')}</span>
-        <span>${esc(a.date || '')}</span>
+        <span>${esc(a.fetch_date || a.date || '')}</span>
         <a href="${esc(a.url)}" target="_blank" rel="noopener">看原文 ↗</a>
       </div>
       ${o.thesis ? `<div class="side-thesis" style="font-size:14.5px"><b>总论点：</b>${esc(o.thesis)}</div>` : ''}
@@ -276,11 +276,11 @@ function renderAll() {
   const box = $('#all-list');
   if (!S.filtered.length) { box.innerHTML = '<div class="empty">无匹配</div>'; return; }
   const list = S.filtered.slice().sort((a, b) =>
-    (b.date || '').localeCompare(a.date || '') || (b.id || '').localeCompare(a.id || ''));
+    (b.fetch_date || b.date || '').localeCompare(a.fetch_date || a.date || '') || (b.id || '').localeCompare(a.id || ''));
   box.innerHTML = list.map(a => `
     <div class="list-row" data-id="${esc(a.id)}">
       <span class="t">${highlight(a.title, S.filters.q)}</span>
-      <span class="m">${esc(a.source)} · ${esc(a.column || '')} · ${esc(a.date || '')}</span>
+        <span class="m">${esc(a.source)} · ${esc(a.column || '')} · ${esc(a.fetch_date || a.date || '')}</span>
     </div>`).join('');
 
   $$('.list-row').forEach(el => {
