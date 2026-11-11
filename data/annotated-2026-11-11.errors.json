@@ -1,0 +1,9 @@
+[
+  {
+    "id": "hnrb-2026-11-11-1807345",
+    "title": "从韶山出发 让信仰抵达",
+    "url": "http://epaper.voc.com.cn/hnrb/html/2026-11/11/content_1807345.htm",
+    "error": "ApiError: HTTP 500: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"input new_sensitive (1026)\"},\"request_id\":\"0744306825abe5f0d8c6a2bd610401f9\"}",
+    "attempts": 3
+  }
+]
